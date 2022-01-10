@@ -214,7 +214,7 @@ def map2tod(img,xymap,scan):
 
     return newtod
 
-def tod2map_v2(xymap,scan):
+def tod2map_v2(xymap,scan,noise=False,axis=1,roll=False):
 
     x,y = xymap             # In arcseconds
     xf  = x.flatten()
@@ -223,6 +223,15 @@ def tod2map_v2(xymap,scan):
     nx,ny   = x.shape
     sv      = scan["vals"].copy()
     sw      = scan["wts"].copy()
+    if noise:
+        sv = np.flip(sv,axis=axis)
+        sw = np.flip(sw,axis=axis)
+    if roll:
+        ndet,nint = sv.shape
+        for i in range(ndet):
+            shift = int(np.round((np.random.random()-0.5)*nint))
+            sv[i,:] = np.roll(sv[i,:],shift)
+            sw[i,:] = np.roll(sw[i,:],shift)
     xs = np.round((scan["x"]*60 - np.min(x))/pixsize)
     ys = np.round((scan["y"]*60 - np.min(y))/pixsize)
     xsf   = xs.flatten()

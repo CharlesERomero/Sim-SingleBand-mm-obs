@@ -99,11 +99,19 @@ def cross_power_spectrum_2d(arr,arr1,nbins=10,psx=1.0,psy=1.0,logbins=0):
                 pkbins[idx+1] = np.std(pk[list])/np.sqrt(len(list[0]))
     return kbin,pkbin,pkbins
 
-def fourier_conv_2d(arr,kernel):
+def fourier_conv_2d(arr,kernel,doshift=True):
+    """
+    If kernel (e.g. a Gaussian) is peaked in the center, then you
+    want to have doshift=True.
+    """
     farr = np.fft.fft2(arr)
     fker = np.fft.fft2(kernel)
     farr = farr * fker
-    return np.real(np.fft.ifft2(farr))
+    arrc = np.real(np.fft.ifft2(farr))
+    if doshift:
+        arrc = np.fft.fftshift(arrc)
+    
+    return arrc
 
 def fourier_filtering_2d(arr,filt_type,par):
     farr  = np.fft.fft2(arr)
