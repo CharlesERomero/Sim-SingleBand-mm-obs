@@ -1,4 +1,5 @@
 import numpy as np
+from astropy.io import fits as pyfits
 
 def mk_hex_array(ntop,spacing=0.26):
     """ 
@@ -96,7 +97,120 @@ def get_scan_atm(scan,elev=45.0,pa=None,zopac=0.1,tatm=270.0):
         T_atm[i,:] -= detmn[i]
     
     return T_atm
+
+def read_tod_from_fits(fname,hdu=1,branch=None):
+    f=pyfits.open(fname)
+    raw=f[hdu].data
+    #print 'sum of cut elements is ',np.sum(raw['UFNU']<9e5)
+
+    pixid=raw['PIXID']
+    dets=np.unique(pixid)
+    ndet=len(dets)
+    nsamp=len(pixid)/len(dets)
+    if True:
+        ff=180/np.pi
+        xmin=raw['DX'].min()*ff
+        xmax=raw['DX'].max()*ff
+        ymin=raw['DY'].min()*ff
+        ymax=raw['DY'].max()*ff
+        print('nsamp and ndet are ',ndet,nsamp,len(pixid),' on ',fname, 'with lims ',xmin,xmax,ymin,ymax)
+    else:
+        print('nsamp and ndet are ',ndet,nsamp,len(pixid),' on ',fname)
+    #print raw.names
+    dat={}
+    #this bit of odd gymnastics is because a straightforward reshape doesn't seem to leave the data in
+    #memory-contiguous order, which causes problems down the road
+    #also, float32 is a bit on the edge for pointing, so cast to float64
+    dx=raw['DX']
+    if not(branch is None):
+        bb=branch*np.pi/180.0
+        dx[dx>bb]=dx[dx>bb]-2*np.pi
+    #dat['dx']=np.zeros([ndet,nsamp],dtype=type(dx[0]))
+    ndet=np.int(ndet)
+    nsamp=np.int(nsamp)
+    dat['dx']=np.zeros([ndet,nsamp],dtype='float64')
+    dat['dx'][:]=np.reshape(dx,[ndet,nsamp])[:]
+    dy=raw['DY']
+    #dat['dy']=np.zeros([ndet,nsamp],dtype=type(dy[0]))
+    dat['dy']=np.zeros([ndet,nsamp],dtype='float64')
+    dat['dy'][:]=np.reshape(dy,[ndet,nsamp])[:]
+    if 'ELEV' in raw.names:
+        elev=raw['ELEV']*np.pi/180
+        dat['elev']=np.zeros([ndet,nsamp],dtype='float64')
+        dat['elev'][:]=np.reshape(elev,[ndet,nsamp])[:]
+
+    tt=np.reshape(raw['TIME'],[ndet,nsamp])
+    tt=tt[0,:]
+    dt=np.median(np.diff(tt))
+    dat['dt']=dt
+    pixid=np.reshape(pixid,[ndet,nsamp])
+    pixid=pixid[:,0]
+    dat['pixid']=pixid
+    dat_calib=raw['FNU']
+    #print 'shapes are ',raw['FNU'].shape,raw['UFNU'].shape,np.mean(raw['UFNU']>9e5)
+    #dat_calib[raw['UFNU']>9e5]=0.0
+
+    #dat['dat_calib']=np.zeros([ndet,nsamp],dtype=type(dat_calib[0]))
+    dat['dat_calib']=np.zeros([ndet,nsamp],dtype='float64') #go to double because why not
+    dat_calib=np.reshape(dat_calib,[ndet,nsamp])
+
+    dat['dat_calib'][:]=dat_calib[:]
+    if np.sum(raw['UFNU']>9e5)>0:
+        dat['mask']=np.reshape(raw['UFNU']<9e5,dat['dat_calib'].shape)
+        dat['mask_sum']=np.sum(dat['mask'],axis=0)
+    #print 'cut frac is now ',np.mean(dat_calib==0)
+    #print 'cut frac is now ',np.mean(dat['dat_calib']==0),dat['dat_calib'][0,0]
+    dat['fname']=fname
+    f.close()
+    return dat
+
+def noise_from_M2data(mfile,t,ndet,shuffle=True):
+    """
+    This will crudely bootstrap noise realizations from real data. There's probably a lot of nuance
+    that goes into the noise based on the detectors, readout, scan trajectory, and scan speed. 
+    (This ignores all of that).
+    """
     
+    dat = read_tod_from_fits(mfile)
+    ndm2,nt = dat["dat_calib"].shape
+    tm2     = nt*dat["dt"]
+    tfactor = np.max(t)/tm2    # How many times longer is the intended scan vs. the real scan?
+    #times   = np.arange(nt)*dat["dt"]
+    nflips  = int(np.ceil(tfactor))
+    print("Nflips: ",nflips)
+    
+    if nflips > 1:
+        dat_flipped = np.flip(dat["dat_calib"],axis=1)
+        dat_init_stitch = np.hstack((dat["dat_calib"],dat_flipped))
+        dat_stitched = np.tile(dat_init_stitch,int(np.ceil(nflips/2)))[:,:nflips*nt]
+    else:
+        dat_stitched = dat["dat_calib"].copy()
+
+    t_stitched = dat["dt"]*np.arange(nt*nflips)
+    dat_interp = np.zeros((ndm2,len(t)))
+    for i in range(ndm2):
+        dat_interp[i,:]  = np.interp(t,t_stitched,dat_stitched[i,:])
+    ### Now we have timestreams that match the time-length of our intended scan
+
+    ### We need to match it to the number of detectors now.
+
+    det_factor = ndet / ndm2
+    if det_factor <= 1:
+        dat_out = dat_interp[:ndet,:]
+    else:
+        ndf = int(np.ceil(det_factor))
+        dat_out_init = np.tile(dat_interp.T,(1,ndf)).T
+        dat_out = dat_out_init[:ndet,:]
+
+    #print(dat_out.shape)
+    if shuffle:
+        sind = np.arange(ndet)
+        np.random.shuffle(sind)
+        #print(sind)
+        dat_out = dat_out[sind,:]
+
+    return dat_out
+
 def create_noise(t,ndet,norm=1e1,knee=1.0,slope=0,pdn=3e-2,knee2=0.03):
 
     """ 
